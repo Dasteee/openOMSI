@@ -98,6 +98,7 @@ impl ApplicationHandler for App {
                 self.input_back();
             }
             WindowEvent::Focused(false) => {
+                self.shell.modifiers.release_keys();
                 self.finish_vr_nav_edit();
                 self.input.window_focused = false;
                 if let Some(ctl) = self.input.controllers.as_mut() {
@@ -128,6 +129,7 @@ impl ApplicationHandler for App {
             // person at the computer moving theirs over it clicked through the test)
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. } if scripted_window() => {}
             WindowEvent::ModifiersChanged(modifiers) => {
+                self.shell.modifiers.told(modifiers.state());
                 for code in input_script::release_inactive_modifiers(&mut self.input.keys, modifiers.state()) {
                     self.on_key(event_loop, code, false, false);
                 }
@@ -138,6 +140,12 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Released
                     && matches!(event.physical_key, PhysicalKey::Code(c) if input_script::is_modifier(c) && !self.input.keys.contains(&c)) => {}
             WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    if !self.vr_active() && self.menus.game_menu.is_some() && self.menus.chooser.is_some()
+                        && self.shell.search_key(code, event.state == ElementState::Pressed, event.text.as_deref()) {
+                        return;
+                    }
+                }
                 // a plugin's text field being typed into takes the keys pressed (their
                 // releases go on, so that nothing held stays held)
                 if event.state == ElementState::Pressed {
@@ -214,6 +222,10 @@ impl ApplicationHandler for App {
                         event.repeat,
                     );
                 }
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text))
+                if self.shell_takes_mouse() && self.shell.search_field.is_some() && self.shell.ui.focus == self.shell.search_field => {
+                self.shell.ui.input.text.push_str(&text);
             }
             // In VR right-click zooms; with mouse steering it first releases the steering.
             // On the desktop a right-drag zooms, as in OMSI (`on_right`).

@@ -69,6 +69,7 @@ impl App {
         let chooser_list = self.menus.admin_list.as_ref().unwrap_or(&self.menus.vehicle_list);
         let (kind, head, preview) = crate::game_lists::menu_extras(self.menus.list_kind.as_ref(), self.menus.admin_list.as_deref(), self.menus.chooser, self.session.schedule.as_ref(), self.clock.time);
         let camera_tab = matches!(self.menus.list_kind, Some(ListKind::Options(t)) if Some(t) == tabs.as_ref().and_then(|(titles, _)| titles.iter().position(|x| x == omsi_ui::tr("Camera").as_ref())));
+        let search_query = if self.menus.menu_edit_search { self.menus.menu_edit.as_deref().unwrap_or("") } else { &self.menus.menu_search };
         let list = self.menus.chooser.map(|sel| ListView {
             kind,
             head,
@@ -78,6 +79,7 @@ impl App {
             preview: preview.as_ref(),
             pane_first: self.menus.pane_scroll.filter(|p| Some(p.0) == self.menus.chooser).map(|p| p.1),
             dropdown: self.menus.dropdown.as_ref().map(|d| ui::DropdownView { row: d.row, items: d.items.iter().map(|x| x.0.as_str()).collect(), sel: d.sel, top: d.top, current: d.current }),
+            search: self.menus.list_kind.as_ref().filter(|kind| crate::game_lists::searchable(kind)).map(|_| (search_query, self.menus.menu_edit_search)),
             key: format!("{:?}", self.menus.list_kind).chars().filter(|c| c.is_alphanumeric()).collect(),
         });
         let view = PauseView {
@@ -103,6 +105,29 @@ impl App {
             // (the mouse has taken over from the keyboard)
             self.menus.menu_kbd = false;
             match a {
+                Action::Search { query, focused } => {
+                    if !self.menus.list_kind.as_ref().is_some_and(crate::game_lists::searchable) {
+                        continue;
+                    }
+                    let changed = query != crate::game_lists::search_query(self);
+                    if focused != self.menus.menu_edit_search {
+                        if let Some(window) = self.window.as_ref() {
+                            window.set_ime_allowed(focused);
+                        }
+                    }
+                    self.menus.menu_search = query.clone();
+                    self.menus.menu_edit = focused.then_some(query);
+                    self.menus.menu_edit_search = focused;
+                    if changed {
+                        self.refresh_list();
+                        self.shell.last_sel = None;
+                    }
+                    if focused {
+                        self.menus.chooser = Some(0);
+                    } else if self.menus.chooser == Some(0) {
+                        self.menus.chooser = Some(1);
+                    }
+                }
                 Action::Choose(k) => {
                     if self.menus.game_menu.is_none() {
                         continue;

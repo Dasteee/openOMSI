@@ -275,7 +275,6 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Rows {
             let d = index(&devices, name).map(|i| devices[i].clone()).unwrap_or_default();
             out.extend(action_rows(event_names(app, &d)));
             out.push((format!("Clear {}", button_label(*b)), "bind ".into()));
-            out.push(("Back".into(), "back".into()));
         }
         _ => {}
     }
