@@ -14,7 +14,7 @@ use glam::Vec2;
 use omsi_render::Renderer;
 use omsi_ui::{Draw, Gpu, Layer, Vertex};
 
-use crate::launcher::ui::Ui;
+use crate::launcher::ui::{Id, Key, Modifiers, Ui};
 
 pub(crate) mod pause;
 
@@ -23,6 +23,8 @@ pub(crate) mod pause;
 pub(crate) enum Action {
     /// Line `k` of the game menu or of the open list, as Enter on it.
     Choose(usize),
+    /// The list's search field changed or gained/lost keyboard focus.
+    Search { query: String, focused: bool },
     /// A line of the pause menu's rail chosen while a list is open over it: the list closes
     /// and the line is done.
     Rail(usize),
@@ -62,6 +64,8 @@ pub(crate) struct Shell {
     pub(crate) last_sel: Option<(u64, usize)>,
     /// Where the open drop-down's field was drawn last (its list lies under it).
     pub(crate) dd_anchor: Option<omsi_ui::Rect>,
+    pub(crate) search_field: Option<Id>,
+    pub(crate) modifiers: Modifiers,
     /// The screens cover the whole window (the photo mode's photo): it is cleared first.
     pub(crate) opaque: bool,
 }
@@ -74,12 +78,13 @@ struct Drawn {
 
 impl Shell {
     pub(crate) fn new() -> Shell {
-        Shell { ui: Ui::new(), gpu: None, shot_gpu: None, drawn: None, actions: Vec::new(), picture: None, picture_tex: None, scale: 1.0, over_ui: false, last_sel: None, dd_anchor: None, opaque: false }
+        Shell { ui: Ui::new(), gpu: None, shot_gpu: None, drawn: None, actions: Vec::new(), picture: None, picture_tex: None, scale: 1.0, over_ui: false, last_sel: None, dd_anchor: None, search_field: None, modifiers: Modifiers::default(), opaque: false }
     }
 
     /// A frame of the screens begins: the window's size in physical pixels and how many of
     /// them make a point.
     pub(crate) fn begin(&mut self, width: f32, height: f32, scale: f32, dt: f32) {
+        self.search_field = None;
         self.scale = scale.max(0.25);
         self.ui.input.touch = crate::platform::touch_controls();
         self.ui.begin(Vec2::new(width / self.scale, height / self.scale), self.scale, dt);
@@ -87,6 +92,9 @@ impl Shell {
 
     /// The frame of the screens is drawn: its layers kept for `render`.
     pub(crate) fn finish(&mut self) {
+        if let Some(text) = self.ui.clipboard_out.take() {
+            search_clipboard(Some(text));
+        }
         self.over_ui = self.ui.over_ui;
         let (layers, verts, ranges) = self.ui.finish();
         self.drawn = Some(Drawn { layers, verts, ranges });
@@ -99,6 +107,45 @@ impl Shell {
         self.ui.discard_input();
         self.ui.input.down = false;
         self.ui.active = None;
+        self.ui.focus = None;
+        self.search_field = None;
+    }
+
+    /// Give a focused search field the same editing keys as the launcher text fields.
+    pub(crate) fn search_key(&mut self, code: winit::keyboard::KeyCode, pressed: bool, text: Option<&str>) -> bool {
+        use winit::keyboard::KeyCode as K;
+        let modifier = self.modifiers.key(code, pressed);
+        self.modifiers.apply(&mut self.ui.input);
+        if !pressed || modifier || self.search_field.is_none() || self.ui.focus != self.search_field {
+            return false;
+        }
+        let command = self.modifiers.command();
+        let key = match code {
+            K::ArrowLeft => Some(Key::Left),
+            K::ArrowRight => Some(Key::Right),
+            K::Home => Some(Key::Home),
+            K::End => Some(Key::End),
+            K::Backspace => Some(Key::Backspace),
+            K::Delete => Some(Key::Delete),
+            K::Escape | K::BrowserBack => Some(Key::Escape),
+            K::Enter | K::NumpadEnter | K::ArrowDown | K::ArrowUp | K::Tab => Some(Key::Enter),
+            K::KeyA if command => Some(Key::SelectAll),
+            K::KeyC if command => Some(Key::Copy),
+            K::KeyX if command => Some(Key::Cut),
+            K::KeyV if command => Some(Key::Paste),
+            _ => None,
+        };
+        if let Some(key) = key {
+            if key == Key::Paste {
+                self.ui.clipboard_in = search_clipboard(None);
+            }
+            self.ui.input.keys.push(key);
+        } else if !command {
+            if let Some(text) = text {
+                self.ui.input.text.push_str(text);
+            }
+        }
+        true
     }
 
     pub(crate) fn showing(&self) -> bool {
@@ -185,6 +232,31 @@ impl Shell {
         gpu.render(&r.device, &r.queue, &mut enc, &view, (w, h), Some(wgpu::Color::TRANSPARENT), &d.layers, &draws);
         Some(read_back(r, enc, &tex, w, h))
     }
+}
+
+/// Keep the clipboard alive on X11 so copied search text remains available.
+fn search_clipboard(text: Option<String>) -> Option<String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        thread_local! {
+            static CLIPBOARD: std::cell::RefCell<Option<arboard::Clipboard>> = const { std::cell::RefCell::new(None) };
+        }
+        CLIPBOARD.with(|clipboard| {
+            let mut clipboard = clipboard.borrow_mut();
+            if clipboard.is_none() {
+                *clipboard = arboard::Clipboard::new().ok();
+            }
+            let clipboard = clipboard.as_mut()?;
+            if let Some(text) = text {
+                clipboard.set_text(text).ok();
+                None
+            } else {
+                clipboard.get_text().ok()
+            }
+        })
+    }
+    #[cfg(target_os = "android")]
+    { let _ = text; None }
 }
 
 /// `tex` (RGBA8, `w` x `h`) copied out after the commands of `enc`.

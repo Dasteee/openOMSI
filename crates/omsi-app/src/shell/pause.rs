@@ -35,6 +35,8 @@ pub(crate) struct ListView<'a> {
     pub preview: Option<&'a Preview>,
     pub pane_first: Option<usize>,
     pub dropdown: Option<DropdownView<'a>>,
+    /// The live search text and whether keyboard navigation started editing it.
+    pub search: Option<(&'a str, bool)>,
     /// Names the list for its scroll position (its kind and page).
     pub key: String,
 }
@@ -548,10 +550,36 @@ fn plain_list(sh: &mut Shell, v: &PauseView, list: &ListView, body: Rect) {
 }
 
 /// The rows of a list in `r`, scrolled; `tours`: the chosen one stays marked.
-fn list_rows(sh: &mut Shell, v: &PauseView, list: &ListView, r: Rect, keep_marked: bool) {
+fn list_rows(sh: &mut Shell, v: &PauseView, list: &ListView, mut r: Rect, keep_marked: bool) {
     let items = &list.items;
+    if let Some((query, editing)) = list.search {
+        let name = format!("pause-search-{}", list.key);
+        let id = id_of(&name);
+        sh.search_field = Some(id);
+        if editing {
+            sh.ui.focus = Some(id);
+        }
+        let field = Rect::new(r.x + 2.0, r.y + 2.0, r.w - 10.0, 36.0);
+        let clear_w = if query.is_empty() { 0.0 } else { 34.0 };
+        let mut value = query.to_string();
+        let changed = sh.ui.text_input(&name, Rect::new(field.x, field.y, field.w - clear_w, field.h), &mut value, "Search...", Some("search"));
+        let cleared = clear_w > 0.0 && sh.ui.button(&format!("{name}-clear"), Rect::new(field.right() - clear_w, field.y, clear_w, field.h), "", Some("close"), ButtonKind::Ghost);
+        if cleared {
+            value.clear();
+            sh.ui.focus = Some(id);
+        }
+        let focused = sh.ui.focus == Some(id);
+        if changed || cleared || focused != editing {
+            sh.actions.push(Action::Search { query: value, focused });
+        }
+        r.y += 46.0;
+        r.h = (r.h - 46.0).max(0.0);
+        if changed || cleared {
+            sh.ui.scroll_to(&format!("pause-list-{}", list.key), 0.0, LIST_ROW, r.h);
+        }
+    }
     let back_txt = omsi_ui::tr("Back").into_owned();
-    let shown: Vec<usize> = (0..items.len()).filter(|&k| !(items[k].0 == "back" && plain(items[k].1).0 == back_txt)).collect();
+    let shown: Vec<usize> = (0..items.len()).filter(|&k| items[k].0 != "search" && !(items[k].0 == "back" && plain(items[k].1).0 == back_txt)).collect();
     // (a list of codes and names - the destinations - in two columns)
     let code_w = shown.iter().filter_map(|&k| code_and_name(items[k].1)).map(|(c, _)| sh.ui.width(c, 13.0, Weight::Medium)).fold(0.0f32, f32::max);
     let any_hover = sh.ui.hover(r);
@@ -580,13 +608,7 @@ fn list_rows(sh: &mut Shell, v: &PauseView, list: &ListView, r: Rect, keep_marke
             let h = ui.hover(row);
             let ink = if marked || h { TEXT } else { TEXT_SOFT };
             let cy = row.center().y;
-            if id == "search" {
-                let field = row.inset(2.0);
-                ui.p().rounded(field, 6.0, FIELD);
-                ui.p().rounded_border(field, 6.0, 1.0, EDGE);
-                ui.icon("search", Vec2::new(field.x + 16.0, cy), 16.0, TEXT_DIM);
-                ui.text_in(label, Rect::new(field.x + 34.0, field.y, field.w - 44.0, field.h), 13.0, Weight::Regular, TEXT_SOFT, Align::Left);
-            } else if let Some((name, info)) = label.strip_prefix(line_pre.as_str()).and_then(|rest| rest.rsplit_once("  (")).map(|(n, t)| (n, t.trim_end_matches(')'))) {
+            if let Some((name, info)) = label.strip_prefix(line_pre.as_str()).and_then(|rest| rest.rsplit_once("  (")).map(|(n, t)| (n, t.trim_end_matches(')'))) {
                 // a line of the timetable: its number on a sign, as a line sign on a bus
                 let sw = (ui.width(name, 14.0, Weight::Bold) + 22.0).max(48.0);
                 let sign = Rect::new(row.x + 10.0, cy - 13.0, sw, 26.0);
@@ -756,5 +778,59 @@ mod tests {
         assert!(low.bottom() <= 800.0, "{low:?}");
         let high = dropdown_rect(Rect::new(500.0, 100.0, 300.0, 34.0), 6, size);
         assert!(high.y >= 134.0, "{high:?}");
+    }
+
+    #[test]
+    fn search_edits_at_the_caret_and_replaces_selected_text() {
+        use winit::keyboard::{KeyCode, ModifiersState};
+        let mut sh = Shell::new();
+        let frame = |sh: &mut Shell, query: &str, editing: bool| {
+            let list = ListView {
+                kind: MenuKind::List, head: None, tabs: None,
+                items: vec![("search", query), ("bind door_1", "Front door"), ("back", "Back")],
+                sel: 0, preview: None, pane_first: None, dropdown: None,
+                search: Some((query, editing)), key: "bindings".into(),
+            };
+            let view = PauseView { paused: true, rail: &[], rail_sel: None, rail_open: None, list: None, kbd: false, keys: true };
+            sh.begin(800.0, 600.0, 1.0, 1.0 / 60.0);
+            list_rows(sh, &view, &list, Rect::new(20.0, 20.0, 300.0, 300.0), false);
+            sh.finish();
+        };
+        frame(&mut sh, "door_1", true);
+        assert!(sh.search_key(KeyCode::ArrowLeft, true, None));
+        assert!(sh.search_key(KeyCode::Backspace, true, None));
+        frame(&mut sh, "door_1", true);
+        assert_eq!(sh.actions.pop(), Some(Action::Search { query: "door1".into(), focused: true }));
+        sh.modifiers.told(ModifiersState::CONTROL);
+        assert!(sh.search_key(KeyCode::KeyA, true, Some("a")));
+        sh.modifiers.told(ModifiersState::empty());
+        assert!(sh.search_key(KeyCode::KeyF, true, Some("front")));
+        frame(&mut sh, "door1", true);
+        assert_eq!(sh.actions.pop(), Some(Action::Search { query: "front".into(), focused: true }));
+        assert!(sh.search_key(KeyCode::Escape, true, None));
+        frame(&mut sh, "front", true);
+        assert_eq!(sh.actions.pop(), Some(Action::Search { query: "front".into(), focused: false }));
+        assert!(!sh.search_key(KeyCode::KeyF, true, Some("f")));
+    }
+
+    #[test]
+    fn clearing_search_keeps_the_field_focused() {
+        let mut sh = Shell::new();
+        let list = ListView {
+            kind: MenuKind::List, head: None, tabs: None,
+            items: vec![("search", "door"), ("bind door_1", "Front door")],
+            sel: 0, preview: None, pane_first: None, dropdown: None,
+            search: Some(("door", true)), key: "bindings".into(),
+        };
+        let view = PauseView { paused: true, rail: &[], rail_sel: None, rail_open: None, list: None, kbd: false, keys: true };
+        for pressed in [true, false] {
+            sh.ui.input.mouse = Vec2::new(290.0, 40.0);
+            sh.button(pressed);
+            sh.begin(800.0, 600.0, 1.0, 1.0 / 60.0);
+            list_rows(&mut sh, &view, &list, Rect::new(20.0, 20.0, 300.0, 300.0), false);
+            sh.finish();
+        }
+        assert_eq!(sh.actions.pop(), Some(Action::Search { query: String::new(), focused: true }));
+        assert_eq!(sh.ui.focus, sh.search_field);
     }
 }

@@ -53,13 +53,13 @@ pub(crate) enum ListKind {
 }
 
 /// The lists with a search line on top: the vehicles to place, the depot files and the
-/// destinations.
+/// destinations, and keyboard/controller actions.
 pub(crate) fn searchable(kind: &ListKind) -> bool {
-    matches!(kind, ListKind::Hofs | ListKind::Destinations | ListKind::PlaceMaker | ListKind::PlaceType(_) | ListKind::PlaceHof(..))
+    matches!(kind, ListKind::Events | ListKind::ControllerButton(..) | ListKind::Hofs | ListKind::Destinations | ListKind::PlaceMaker | ListKind::PlaceType(_) | ListKind::PlaceHof(..))
 }
 
 /// The search typed (while it is) or set for the open list.
-fn search_query(app: &App) -> &str {
+pub(crate) fn search_query(app: &App) -> &str {
     if app.menus.menu_edit_search {
         app.menus.menu_edit.as_deref().unwrap_or("")
     } else {
@@ -72,6 +72,11 @@ fn search_query(app: &App) -> &str {
 fn search_matches(label: &str, action: &str, query: &str) -> bool {
     let haystack = format!("{label} {action}").to_lowercase();
     query.split_whitespace().all(|word| haystack.contains(&word.to_lowercase()))
+}
+
+/// Filter choices without hiding the control that clears a button's assignment.
+fn filter_choices(rows: &mut Vec<(String, String)>, query: &str) {
+    rows.retain(|(label, action)| action == "bind " || search_matches(label, action, query));
 }
 
 /// A vehicle file of the menu's list (`Vehicles/...`) as its definition.
@@ -425,7 +430,8 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             }
             return pages.swap_remove(tab).1;
         }
-        ListKind::ControllerDevices(_) | ListKind::Controller(..) | ListKind::ControllerAxis(..) | ListKind::ControllerButtons(_) | ListKind::ControllerButtonSettings(..) | ListKind::ControllerButton(..) | ListKind::ControllerCapture(_) => return crate::game_controller_menu::items(app, kind),
+        ListKind::ControllerButton(..) => out = crate::game_controller_menu::items(app, kind),
+        ListKind::ControllerDevices(_) | ListKind::Controller(..) | ListKind::ControllerAxis(..) | ListKind::ControllerButtons(_) | ListKind::ControllerButtonSettings(..) | ListKind::ControllerCapture(_) => return crate::game_controller_menu::items(app, kind),
         ListKind::Controls => {
             return vec![
                 opens("Keyboard", "Change driving, vehicle, game and camera key bindings", "keyboard"),
@@ -452,7 +458,6 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             if out.is_empty() {
                 out.push(("No vehicle events were found".into(), "back".into()));
             }
-            return out;
         }
         ListKind::Lines => {
             if let Some(sch) = crate::duty_book::timetable(app) {
@@ -626,13 +631,11 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
     }
     if searchable(kind) {
         let query = search_query(app);
-        out.retain(|(label, action)| search_matches(label, action, query));
-        let label = if app.menus.menu_edit_search {
-            format!("{}: {query}_  ({})", tr("Search..."), tr("Enter sets it, Esc cancels"))
-        } else if query.is_empty() {
+        filter_choices(&mut out, query);
+        let label = if query.is_empty() {
             tr("Search...")
         } else {
-            format!("{}: {query}", tr("Search..."))
+            query.to_string()
         };
         out.insert(0, (label, "search".into()));
     }
@@ -760,13 +763,13 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
 /// Do a line of the list, a setting changed as `mv` says (Enter and a click on a line are
 /// `Move::Next`; the arrows and a click on a slider or a stepper the others).
 pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -> Option<ListKind> {
-    if crate::game_controller_menu::is_controller_list(Some(kind)) {
-        return crate::game_controller_menu::run(app, kind, action, mv);
-    }
     if action == "search" && searchable(kind) {
         app.menus.menu_edit = Some(app.menus.menu_search.clone());
         app.menus.menu_edit_search = true;
         return Some(kind.clone());
+    }
+    if crate::game_controller_menu::is_controller_list(Some(kind)) {
+        return crate::game_controller_menu::run(app, kind, action, mv);
     }
     if action == "back" {
         return match kind {
@@ -3081,6 +3084,25 @@ fn start_duty(app: &mut App, line: &str, tour: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn binding_search_keeps_action_ids_and_clear_assignment() {
+        use super::ListKind;
+        assert!(super::searchable(&ListKind::Events));
+        assert!(super::searchable(&ListKind::ControllerButton("Wheel".into(), 7)));
+        let rows = vec![
+            ("Front door open/close".into(), "bind door_1".into()),
+            ("Rear door open/close".into(), "bind door_2".into()),
+            ("Clear Button 8".into(), "bind ".into()),
+        ];
+        let mut filtered = rows.clone();
+        super::filter_choices(&mut filtered, " FRONT door ");
+        assert_eq!(filtered, vec![rows[0].clone(), rows[2].clone()]);
+        super::filter_choices(&mut filtered, "DOOR_1");
+        assert_eq!(filtered, vec![rows[0].clone(), rows[2].clone()]);
+        super::filter_choices(&mut filtered, "no such action");
+        assert_eq!(filtered, vec![rows[2].clone()]);
+    }
+
     #[test]
     fn searches_model_and_hof_names_and_paths_without_losing_their_actions() {
         assert!(super::search_matches("Volvo BRT", "bus Vehicles/Pack/biarticulado.bus", "VOLVO biarticulado"));

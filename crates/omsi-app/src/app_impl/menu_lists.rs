@@ -123,8 +123,11 @@ impl App {
 
     /// The search of the list shown is over (another list is shown).
     fn forget_search(&mut self) {
+        self.shell.ui.focus = None;
+        self.shell.search_field = None;
         self.menus.menu_search.clear();
         if self.menus.menu_edit_search {
+            if let Some(window) = self.window.as_ref() { window.set_ime_allowed(false); }
             self.menus.menu_edit = None;
             self.menus.menu_edit_search = false;
         }
@@ -261,9 +264,11 @@ impl App {
 
     /// The open list is closed: back to the game menu.
     pub(crate) fn close_list(&mut self) {
+        self.shell.ui.focus = None;
+        self.shell.search_field = None;
         self.menus.key_capture = None;
         self.menus.dropdown = None;
-        if self.menus.menu_edit_icao { if let Some(w)=self.window.as_ref(){w.set_ime_allowed(false);} }
+        if self.menus.menu_edit_icao || self.menus.menu_edit_search { if let Some(w)=self.window.as_ref(){w.set_ime_allowed(false);} }
         self.menus.menu_edit_icao=false;
         self.menus.menu_edit_search = false;
         self.menus.menu_search.clear();
